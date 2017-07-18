@@ -40,6 +40,7 @@ class FCN(nn.Module):
         self.num_classes = num_classes
 
         resnet = models.resnet101(pretrained=True)
+        # resnet = models.resnet18(pretrained=True)
 
         self.conv1 = resnet.conv1
         self.bn0 = resnet.bn1
@@ -81,11 +82,11 @@ class FCN(nn.Module):
                           kernel_size=3, padding=1)
             )
         return nn.Sequential(
-            nn.Conv2d(inplanes, inplanes/2, 3, padding=1, bias=False),
-            nn.BatchNorm2d(inplanes/2),
+            nn.Conv2d(inplanes, inplanes//2, 3, padding=1, bias=False),
+            nn.BatchNorm2d(inplanes//2),
             nn.ReLU(inplace=True),
             nn.Dropout(.1),
-            nn.Conv2d(inplanes/2, self.num_classes, 1),
+            nn.Conv2d(inplanes//2, self.num_classes, 1),
         )
 
     def forward(self, x):
