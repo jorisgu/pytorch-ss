@@ -3,7 +3,7 @@ import numpy as np
 
 class LinePlotter(object):
     def __init__(self, env_name="main"):
-        self.vis = visdom.Visdom()
+        self.vis = visdom.Visdom()#server='http://localhost',port='8000',proxy='https://proxy.onera:80')
         self.env = env_name
         self.plots = {}
 

@@ -13,10 +13,10 @@ from torchvision.transforms import Compose, CenterCrop, Normalize, ToTensor
 from tqdm import * #tqdm
 from PIL import Image
 import numpy as np
-
+import getpass
 
 num_classes = 38
-batch_size=6
+batch_size=10
 
 input_transform = Compose([
     Scale((224, 224), Image.BILINEAR),
@@ -40,7 +40,7 @@ def main():
     model = FCN(num_classes)
     try:
         print('Loading path')
-        path = '/home/jogue/workspace/pytorch-ss/pth/fcn-deconv-4.pth'
+        path = '/home/'+getpass.getuser()+'/workspace/pytorch-ss/pth/fcn-deconv-4.pth'
         model.load_state_dict(torch.load(path));
     except:
         print('Fail while loading model weights')
@@ -66,7 +66,9 @@ def main():
 
     weight[0] = 0
     max_iters = 92*epoches
-
+    criterions={}
+    for i in range(6):
+        criterions[i]=CrossEntropyLoss2d((i+1)*weight.cuda())
     criterion = CrossEntropyLoss2d(weight.cuda())
     optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=momentum,
                                 weight_decay=weight_decay)
@@ -79,13 +81,13 @@ def main():
     myplots = LinePlotter('ResNet FCN')
     for epoch in range(epoches):
         # validate(model,valloader,criterion,epoch,myplots)
-        train(model,trainloader,criterion,optimizer,epoch,myplots)
-        if (epoch+1)%4==0:
-            validate(model,valloader,criterion,epoch,myplots)
+        train(model,trainloader,criterions,optimizer,epoch,myplots)
+        # if (epoch+1)%4==0:
+        validate(model,valloader,criterions,epoch,myplots)
         torch.save(model.state_dict(), "./pth/fcn-deconv-%d.pth" % (4*(epoch//4+1)))
     torch.save(model.state_dict(), "./pth/fcn-deconv.pth")
 
-def train(model,dataloader,criterion,optimizer,epoch,plots):
+def train(model,dataloader,criterions,optimizer,epoch,plots):
     model.train()
     if (epoch+1) % 20 == 0:
         lr /= 10
@@ -96,8 +98,16 @@ def train(model,dataloader,criterion,optimizer,epoch,plots):
     running_oa = 0.0
     running_moa = 0.0
 
+    avg_losses={}
+    avg_accuracies={}
+    avg_moas={}
+    for i in range(6):
+        avg_losses[i] = AverageMeter()
+        avg_accuracies[i] = AverageMeter()
+        avg_moas[i] = AverageMeter()
+
     tq_bar = tqdm(enumerate(dataloader),total=len(dataloader),ncols=80,desc='Training')
-    for i, (images, labels_group) in tq_bar:
+    for batch_id, (images, labels_group) in tq_bar:
         # if i>25:
         #     break
         if torch.cuda.is_available():
@@ -109,43 +119,61 @@ def train(model,dataloader,criterion,optimizer,epoch,plots):
             labels_group = [labels for labels in labels_group]
 
         optimizer.zero_grad()
-        losses = []
+        batch_losses = []
+        batch_accuracies = []
+        batch_moas = []
 
         for img, labels in zip(images, labels_group):
             outputs = model(img)
+            net_batch_size = outputs[0].size(0)
             if torch.cuda.is_available():
                 labels = [Variable(label.cuda()) for label in labels]
             else:
                 labels = [Variable(label) for label in labels]
-            for pair in zip(outputs, labels):
-                losses.append(criterion(pair[0], pair[1]))
+            for i,pair in enumerate(zip(outputs, labels)):
+                accuracy = accuracy_dense(pair[0].data, pair[1].data)
+                moa,_ = mAP_dense(pair[0].data, pair[1].data)
+                batch_losses.append(criterions[i](pair[0], pair[1]))
+                batch_accuracies.append(accuracy)
+                batch_moas.append(moa)
 
-            moa,_ = mAP_dense(outputs[0].data, labels[0].data)
-            oa = accuracy_dense(outputs[0].data, labels[0].data)
+        for i in range(6):
+            avg_losses[i].update(batch_losses[i].data[0], net_batch_size)
+            avg_accuracies[i].update(batch_accuracies[i], net_batch_size)
+            avg_moas[i].update(batch_moas[i], net_batch_size)
 
+        ## LOSS COMPUTATION
+        # loss_weight = [auto_loss_weight(0,epoch), auto_loss_weight(1,epoch), auto_loss_weight(2,epoch), auto_loss_weight(3,epoch), auto_loss_weight(4,epoch)]
         if epoch < 40:
             loss_weight = [0.1, 0.1, 0.1, 0.1, 0.1, 0.5]
         else:
             loss_weight = [0.5, 0.1, 0.1, 0.1, 0.1, 0.1]
 
-        loss = 0
-        for w, l in zip(loss_weight, losses):
-            loss += w*l
-        loss.backward()
+        # loss_weight = [1., 0.01, 0.01, 0.01, 0.01, 0.01] # fait converger en OA la HD layer
+        loss_weight = [1.,0.7, 0.6, 0.5, 0.1, 0.05, 0.01]
+
+        total_batch_loss = 0
+        for w, l in zip(loss_weight, batch_losses):
+            total_batch_loss += w*l
+        total_batch_loss.backward()
+
+
         optimizer.step()
-        running_loss += loss.data[0]
-        running_oa += oa
-        running_moa += moa
-        plots.plot("Total loss (running)", "train", epoch*len(dataloader)+i+1, running_loss/(i+1))
-        plots.plot("OA (running)", "train", epoch*len(dataloader)+i+1, running_oa/(i+1))
-        plots.plot("mOA (running)", "train", epoch*len(dataloader)+i+1, running_moa/(i+1))
+        running_loss += total_batch_loss.data[0]
+        # running_oa += oa
+        # running_hd_moa += hd_moa
+        for i in range(6):
+            plots.plot("Total loss (running)", "train "+str(i), epoch*len(dataloader)+batch_id+1, avg_losses[i].val)
+            plots.plot("OA (running)", "train "+str(i), epoch*len(dataloader)+batch_id+1, avg_accuracies[i].val)
+            plots.plot("mOA (running)", "train "+str(i), epoch*len(dataloader)+batch_id+1, avg_moas[i].val)
+    for i in range(6):
+        plots.plot("Total loss (final mean of epoch)", "train "+str(i), epoch+1, avg_losses[i].val)
+        plots.plot("OA (final mean of epoch)", "train "+str(i), epoch+1, avg_accuracies[i].val)
+        plots.plot("mOA (final mean of epoch)", "train "+str(i), epoch+1, avg_moas[i].val)
 
-    plots.plot("Total loss (final mean of epoch)", "train", epoch+1, running_loss/i)
-    plots.plot("OA (final mean of epoch)", "train", epoch+1, running_oa/i)
-    plots.plot("mOA (final mean of epoch)", "train", epoch+1, running_moa/i)
 
 
-def validate(model,dataloader,criterion,epoch,plots):
+def validate(model,dataloader,criterions,epoch,plots):
     """Perform validation on the validation set"""
     # switch to evaluate mode
     model.eval()
@@ -154,55 +182,99 @@ def validate(model,dataloader,criterion,epoch,plots):
     running_oa = 0.0
     running_moa = 0.0
 
-    tq_bar = tqdm(enumerate(dataloader),total=len(dataloader),ncols=80,desc='Testing')
-    for i, (images, labels_group) in tq_bar:
+    avg_losses={}
+    avg_accuracies={}
+    avg_moas={}
+    for i in range(6):
+        avg_losses[i] = AverageMeter()
+        avg_accuracies[i] = AverageMeter()
+        avg_moas[i] = AverageMeter()
 
+    tq_bar = tqdm(enumerate(dataloader),total=len(dataloader),ncols=80,desc='Testing')
+    for batch_id, (images, labels_group) in tq_bar:
         # if i>25:
         #     break
         if torch.cuda.is_available():
-            images = [Variable(image.cuda(), volatile=True) for image in images]
+            images = [Variable(image.cuda()) for image in images]
             labels_group = [labels for labels in labels_group]
         else:
             print('Cuda not available')
-            images = [Variable(image, volatile=True) for image in images]
+            images = [Variable(image) for image in images]
             labels_group = [labels for labels in labels_group]
 
-        losses = []
+
+        batch_losses = []
+        batch_accuracies = []
+        batch_moas = []
 
         for img, labels in zip(images, labels_group):
             outputs = model(img)
+            net_batch_size = outputs[0].size(0)
             if torch.cuda.is_available():
-                labels = [Variable(label.cuda(), volatile=True) for label in labels]
+                labels = [Variable(label.cuda()) for label in labels]
             else:
-                labels = [Variable(label, volatile=True) for label in labels]
-            for pair in zip(outputs, labels):
-                losses.append(criterion(pair[0], pair[1]))
+                labels = [Variable(label) for label in labels]
+            for i,pair in enumerate(zip(outputs, labels)):
+                accuracy = accuracy_dense(pair[0].data, pair[1].data)
+                moa,_ = mAP_dense(pair[0].data, pair[1].data)
+                batch_losses.append(criterions[i](pair[0], pair[1]))
+                batch_accuracies.append(accuracy)
+                batch_moas.append(moa)
 
-            oa = accuracy_dense(outputs[0].data, labels[0].data)
-            moa,_ = mAP_dense(outputs[0].data, labels[0].data)
+        for i in range(6):
+            avg_losses[i].update(batch_losses[i].data[0], net_batch_size)
+            avg_accuracies[i].update(batch_accuracies[i], net_batch_size)
+            avg_moas[i].update(batch_moas[i], net_batch_size)
 
+        ## LOSS COMPUTATION
+        # loss_weight = [auto_loss_weight(0,epoch), auto_loss_weight(1,epoch), auto_loss_weight(2,epoch), auto_loss_weight(3,epoch), auto_loss_weight(4,epoch)]
         if epoch < 40:
             loss_weight = [0.1, 0.1, 0.1, 0.1, 0.1, 0.5]
         else:
             loss_weight = [0.5, 0.1, 0.1, 0.1, 0.1, 0.1]
 
-        loss = 0
-        for w, l in zip(loss_weight, losses):
-            loss += w*l
+        # loss_weight = [1., 0.01, 0.01, 0.01, 0.01, 0.01] # fait converger en OA la HD layer
+        loss_weight = [1.,0.7, 0.6, 0.5, 0.1, 0.05, 0.01]
+
+        total_batch_loss = 0
+        for w, l in zip(loss_weight, batch_losses):
+            total_batch_loss += w*l
 
 
-        running_loss += loss.data[0]
-        running_oa += oa
-        running_moa += moa
-        # plots.plot("Total loss (running)", "val", epoch*len(dataloader)+i+1, running_loss/(i+1))
-        # plots.plot("OA (running)", "val", epoch*len(dataloader)+i+1, running_oa/(i+1))
-        # plots.plot("mOA (running)", "val", epoch*len(dataloader)+i+1, running_moa/(i+1))
+        running_loss += total_batch_loss.data[0]
+        # running_oa += oa
+        # running_hd_moa += hd_moa
+        for i in range(6):
+            plots.plot("Total loss (running)", "val "+str(i), epoch*len(dataloader)+batch_id+1, avg_losses[i].val)
+            plots.plot("OA (running)", "val "+str(i), epoch*len(dataloader)+batch_id+1, avg_accuracies[i].val)
+            plots.plot("mOA (running)", "val "+str(i), epoch*len(dataloader)+batch_id+1, avg_moas[i].val)
+    for i in range(6):
+        plots.plot("Total loss (final mean of epoch)", "val "+str(i), epoch+1, avg_losses[i].val)
+        plots.plot("OA (final mean of epoch)", "val "+str(i), epoch+1, avg_accuracies[i].val)
+        plots.plot("mOA (final mean of epoch)", "val "+str(i), epoch+1, avg_moas[i].val)
 
-    plots.plot("Total loss (final mean of epoch)", "val", epoch+1, running_loss/i)
-    plots.plot("OA (final mean of epoch)", "val", epoch+1, running_oa/i)
-    plots.plot("mOA (final mean of epoch)", "val", epoch+1, running_moa/i)
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+    def __init__(self):
+        self.reset()
 
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
 
+    def update(self, val, n=1.):
+        if float(val)>=0. and float(n)>=1.:
+            self.val = val
+            self.sum += val * n
+            self.count += n
+            self.avg = self.sum / self.count
+        else:
+            print('Error in values and number',val,n)
+
+def auto_loss_weight(order, epoch, epoch_max=100):
+    return min(1,max(0,0.025*epoch/epoch_max*pow((2-order),3)+0.2))
 def accuracy_dense(output, target):
     output_np = output.cpu().numpy()
     output_np = np.argmax(output_np, axis=1)

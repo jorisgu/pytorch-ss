@@ -8,12 +8,13 @@ import torch
 import torchvision
 from torch.utils import data
 from transform import HorizontalFlip, VerticalFlip
+import getpass
 
 def default_loader(path):
     return Image.open(path)
 
 class sunrgbd_rgb(data.Dataset):
-    def __init__(self, root='/home/jogue/workspace/datasets/SUNRGBD_pv/data', split="train", encodage='rgb_i_100_8bits', img_transform=None, label_transform=None):
+    def __init__(self, root='/home/'+getpass.getuser()+'/workspace/datasets/SUNRGBD_pv/data', split="train", encodage='rgb_i_100_8bits', img_transform=None, label_transform=None):
         self.root = root
         self.split = split
         # self.mean_bgr = np.array([104.00698793, 116.66876762, 122.67891434])
