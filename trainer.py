@@ -38,6 +38,8 @@ def main():
     trainloader = data.DataLoader(sunrgbd_rgb(split='train', img_transform=input_transform,label_transform=target_transform),batch_size=batch_size, shuffle=True, pin_memory=True)
     valloader = data.DataLoader(sunrgbd_rgb(split='test', img_transform=input_transform,label_transform=target_transform),batch_size=batch_size, shuffle=True, pin_memory=True)
     model = FCN(num_classes)
+    # print(model)
+    # exit(0)
     try:
         print('Loading path')
         path = '/home/'+getpass.getuser()+'/workspace/pytorch-ss/pth/fcn-deconv-4.pth'
